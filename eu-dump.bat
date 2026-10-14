@@ -1,7 +1,8 @@
 @echo off
 rem Stažení artefaktů z hlavní jednotky (HJ) dárcovského vozu s EU firmwarem (VOYAH Courage H37Z) přes ADB — Windows.
 rem Dvě fáze bez překryvu:
-rem   fáze 1 (rychlá, výchozí): přehledy + carplay.tar, etc.tar, ota-candidates.tar (CarPlay, konfigurace, firmware);
+rem   fáze 1 (rychlá, výchozí): přehledy + carplay, etc, new (balíčky, které v CN nejsou), voice (hlas), ota-candidates,
+rem          diff a heavy (aplikace, které se v EU liší v kódu);
 rem   fáze 2 (--full): vše ostatní — celé oddíly obrazu (part-*.tar), rozbalené APEX, /data/app; 1. fáze se neopakuje.
 rem Návod — README.md vedle. Logika na HJ — eu-dump-device.sh.
 rem Pouze čtení: na HJ vzniká a na konci se maže jen /data/local/tmp/eudump.
@@ -19,6 +20,8 @@ if not defined ADB (
   if exist "%DIR%platform-tools\adb.exe" (set "ADB=%DIR%platform-tools\adb.exe") else (set "ADB=adb")
 )
 set "DEV=/data/local/tmp/eu-dump-device.sh"
+rem seznam balíčků čínského sestavení — pro new.tar
+set "CN=/data/local/tmp/eu-cn-packages.txt"
 
 set "MODE=1"
 if /i "%~1"=="--full" set "MODE=2"
@@ -75,20 +78,25 @@ if errorlevel 1 (
   echo [x] skript se nepodařilo nahrát na HJ
   exit /b 1
 )
+"%ADB%" push "%DIR%cn-packages.txt" %CN% >nul
+if errorlevel 1 (
+  echo [x] seznam čínských balíčků se nepodařilo nahrát na HJ
+  exit /b 1
+)
 rem CRLF po git checkout na Windows rozbije sh na HJ
-"%ADB%" shell "sed -i 's/\r$//' %DEV%"
+"%ADB%" shell "sed -i 's/\r$//' %DEV% %CN%"
 
 set "FAILS=0"
 set "LOST=0"
 if not "%MODE%"=="2" call :stage1
 if not "%MODE%"=="1" if "!LOST!"=="0" call :stage2
 
-"%ADB%" shell "rm -rf /data/local/tmp/eudump %DEV%" >nul 2>nul
+"%ADB%" shell "rm -rf /data/local/tmp/eudump %DEV% %CN%" >nul 2>nul
 if "!LOST!"=="1" (
   echo.
   echo [x] Spojení s HJ ztraceno. Připoj HJ a spusť znovu se stejnou složkou —
   echo     stažené archivy se znovu nestahují. Pokud se HJ už nepřipojí, uklid ručně:
-  echo     adb shell rm -rf /data/local/tmp/eudump %DEV%
+  echo     adb shell rm -rf /data/local/tmp/eudump %DEV% %CN%
   if "%MODE%"=="1" (echo     %~nx0 "!OUT!") else (echo     %~nx0 --%MODE:2=full% "!OUT!")
   exit /b 2
 )
@@ -115,12 +123,13 @@ if "%MODE%"=="1" echo Dál, pokud je čas, — fáze 2 ^(celé oddíly^): %~nx0 
 exit /b 0
 
 :stage1
-echo -- Fáze 1: CarPlay, konfigurace, soubor firmwaru --
-rem Nejdřív text — rychlé a nejcennější, kdyby se spojení přerušilo
+echo -- Fáze 1: CarPlay, konfigurace, EU-only balíčky, hlas, firmware, aplikace lišící se od CN --
+rem Nejdřív text — rychlé a nejcennější, kdyby se spojení přerušilo; archivy v pořadí hodnoty
 call :text report  report.txt
 call :text carplay carplay.txt
+call :text voice   voice.txt
 call :text ota     ota-search.txt
-for %%s in ("tar-carplay carplay.tar opt" "tar-etc etc.tar" "tar-ota ota-candidates.tar opt") do (
+for %%s in ("tar-carplay carplay.tar opt" "tar-etc etc.tar" "tar-new new.tar opt" "tar-voice voice.tar opt" "tar-ota ota-candidates.tar opt" "tar-diff diff.tar opt" "tar-heavy heavy.tar opt") do (
   if "!LOST!"=="0" call :tar %%~s
 )
 if "!LOST!"=="0" call :text lists tar-lists-1.txt

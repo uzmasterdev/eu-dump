@@ -1,4 +1,8 @@
 # Výstupy výpisu: cizí binárky (GB), sériová čísla, VIN a logcat cizího vozu
 eu-*/
-platform-tools/
+# Přenosné adb pro Windows je součástí repozitáře; adb pro macOS/Linux sem lze dát ručně (mimo git)
+platform-tools/*
+!platform-tools/adb.exe
+!platform-tools/AdbWinApi.dll
+!platform-tools/AdbWinUsbApi.dll
 .DS_Store

@@ -2,8 +2,9 @@
 #
 # Stažení artefaktů z hlavní jednotky (HJ) dárcovského vozu s EU firmwarem (VOYAH Courage H37Z) přes ADB.
 # Dvě fáze bez překryvu:
-#   fáze 1 (rychlá, výchozí): přehledy (sestavení, balíčky, CarPlay, hledání firmwaru) + carplay.tar, etc.tar,
-#          ota-candidates.tar — stack CarPlay, jeho konfigurace/SELinux a soubor firmwaru, pokud na HJ zůstal;
+#   fáze 1 (rychlá, výchozí): přehledy (sestavení, balíčky, CarPlay, hlas, hledání firmwaru) + carplay.tar, etc.tar,
+#          new.tar (balíčky, které v čínském sestavení nejsou), voice.tar (hlasový asistent), ota-candidates.tar,
+#          diff.tar a heavy.tar (aplikace, které se v EU liší v kódu);
 #   fáze 2 (--full): vše ostatní — celé oddíly obrazu (part-*.tar), rozbalené APEX, /data/app;
 #          co stáhla 1. fáze, se neopakuje.
 # Návod — README.md vedle.
@@ -34,6 +35,7 @@ if [ -z "$OUT" ] && [ "$MODE" = 2 ]; then
 fi
 [ -n "$OUT" ] || OUT="$DIR/eu-$(date +%Y%m%d-%H%M%S)"
 DEV=/data/local/tmp/eu-dump-device.sh
+CN=/data/local/tmp/eu-cn-packages.txt   # seznam balíčků čínského sestavení — pro new.tar
 
 # adb: proměnná ADB → platform-tools/ vedle skriptu → PATH
 pick_adb() {
@@ -58,13 +60,14 @@ echo "✔ HJ připojena. Výstup: $OUT"
 echo "EU výpis $(date '+%Y-%m-%d %H:%M:%S'), fáze: $MODE, adb: $ADB" >>"$LOG"   # >> — při navázání se log doplňuje
 
 # Úklid na HJ při jakémkoli ukončení, i při Ctrl+C (při vytrženém kabelu se neprovede — viz README)
-cleanup() { "$ADB" shell "rm -rf /data/local/tmp/eudump $DEV" >/dev/null 2>&1; }
+cleanup() { "$ADB" shell "rm -rf /data/local/tmp/eudump $DEV $CN" >/dev/null 2>&1; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 "$ADB" push "$DIR/eu-dump-device.sh" "$DEV" >/dev/null || { echo "✖ skript se nepodařilo nahrát na HJ"; exit 1; }
+"$ADB" push "$DIR/cn-packages.txt" "$CN" >/dev/null || { echo "✖ seznam čínských balíčků se nepodařilo nahrát na HJ"; exit 1; }
 # CRLF po úpravě na Windows rozbije sh na HJ
-"$ADB" shell "sed -i 's/\r\$//' $DEV"
+"$ADB" shell "sed -i 's/\r\$//' $DEV $CN"
 
 fails=0
 
@@ -114,14 +117,19 @@ sums() {
 }
 
 stage1() {
-  echo "── Fáze 1: CarPlay, konfigurace, soubor firmwaru ──" | tee -a "$LOG"
-  # Nejdřív text — rychlé a nejcennější, kdyby se spojení přerušilo
+  echo "── Fáze 1: CarPlay, konfigurace, EU-only balíčky, hlas, firmware, aplikace lišící se od CN ──" | tee -a "$LOG"
+  # Nejdřív text — rychlé a nejcennější, kdyby se spojení přerušilo; archivy v pořadí hodnoty
   text report   report.txt
   text carplay  carplay.txt
+  text voice    voice.txt
   text ota      ota-search.txt
   tarstage tar-carplay carplay.tar opt
   tarstage tar-etc     etc.tar
+  tarstage tar-new     new.tar opt
+  tarstage tar-voice   voice.tar opt
   tarstage tar-ota     ota-candidates.tar opt
+  tarstage tar-diff    diff.tar opt
+  tarstage tar-heavy   heavy.tar opt
   text lists tar-lists-1.txt
   text errs  device-errors-1.txt
 }

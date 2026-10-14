@@ -3,7 +3,8 @@
 Skripty pro **jednorázové** připojení k VOYAH Courage s evropským firmwarem přes ADB. EU verze má nativní bezdrátové
 CarPlay, kdežto čínské sestavení jeho serverovou část nemá: chybí balíčky `com.mega.linkmanager` / `com.mega.carplay*`
 a démon `/system/bin/CarPlayCommService`. Veřejně tyto soubory k dispozici nejsou, takže je lze získat jen ADB výpisem
-z živého EU vozu. Kromě CarPlay skript hledá soubor firmwaru, pokud na jednotce zůstal.
+z živého EU vozu. Dále skript stahuje hlasového asistenta (na EU voze mluví anglicky, čínské sestavení umí jen
+čínsky), aplikace, které se v EU sestavení liší v kódu, a soubor firmwaru, pokud na jednotce zůstal.
 
 Skript **pouze čte**. Na hlavní jednotce (HJ) vznikne dočasná složka `/data/local/tmp/eudump` a samotný skript, na
 konci (v `eu-dump.sh` i po Ctrl+C) se obojí smaže. Nic se neinstaluje, vlastnosti systému se nemění. Jediné, co se na
@@ -16,24 +17,31 @@ dárcovském voze mění, je zapnutí ADB, a to je potřeba vrátit ([níže](#b
 | [`eu-dump.sh`](eu-dump.sh)               | spuštění z macOS a Linuxu                                                                                              |
 | [`eu-dump.bat`](eu-dump.bat)             | spuštění z Windows                                                                                                     |
 | [`eu-dump-device.sh`](eu-dump-device.sh) | logika, která běží na HJ (toybox `sh`, uid `shell`). Oba spouštěče ho nahrají do `/data/local/tmp` a volají po krocích |
+| [`cn-packages.txt`](cn-packages.txt)     | balíčky čínského sestavení (kokpit 4.3.1, tovární obraz). Co na dárcovském voze v seznamu není, jde do `new.tar`        |
+| [`platform-tools/`](platform-tools/)     | přenosné `adb.exe` + `AdbWinApi.dll`, `AdbWinUsbApi.dll` pro Windows — `eu-dump.bat` je použije, nic se neinstaluje      |
 | `eu-<datum-čas>/`                        | výsledek běhu. ⛔ **Zavřeno v `.gitignore`**: gigabajty cizích binárek, sériová čísla, VIN a logcat **cizího vozu**    |
 
 ## Dvě fáze
 
-Výpis je rozdělen na dvě fáze **bez překryvu**: druhá fáze přesně vynechá vše, co stáhla první (stejné seznamy cest →
-`tar -X`).
+Výpis je rozdělen na dvě fáze **bez překryvu**: každý archiv vynechá vše, co obsahují archivy před ním (stejné seznamy
+cest → `tar -X`), a druhá fáze vynechá vše z první. Žádný soubor se nestahuje dvakrát.
 
-**Fáze 1 — rychlá, hlavní výsledky** (`./eu-dump.sh`). Na emulátoru trvá pár sekund. Na skutečném voze záleží hlavně
-na tom, zda se najde soubor firmwaru (ten může mít gigabajty).
+**Fáze 1 — hlavní výsledky** (`./eu-dump.sh`), kolem 3 GB. Na emulátoru 3 minuty, na voze podle USB. Archivy jdou
+v pořadí hodnoty: když dojde čas, nejdůležitější je už na disku a navázání pokračuje od přerušeného archivu.
 
 | Soubor v `eu-<datum>/`  | Co obsahuje                                                                                                                                                                                                                                |
 |-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `report.txt`            | sestavení (`fingerprint`, `display.id`), celý `getprop`, `build.prop` oddílů, `df` a `/proc/mounts`, oddíly `by-name`, všechny balíčky s cestou, verzí a uid, APEX, `pm list libraries/features`, `BOOTCLASSPATH`/`SYSTEMSERVERCLASSPATH` |
 | `carplay.txt`           | balíčky CarPlay a projekce, `dumpsys package` ke každému, soubory podle vzoru (= obsah `carplay.tar`), pravidla SELinux, `privapp-permissions`, vlastnosti, `service list`, procesy, uzly `/dev/i2c-*` a `/dev/iap*`, `dumpsys usb`, logcat |
+| `voice.txt`             | balíčky hlasu, `dumpsys package`, strom `*/third_party` (modely ASR/KWS/NLU, hlasy TTS — tady je vidět, jaké jazyky jednotka má), verze a konfigurace prostředků, locale, `dumpsys voiceinteraction`, logcat                       |
 | `ota-search.txt`        | obsah `/ota`, `/ota/load`, `/fota`, `/log/ota`, `/cache`, `<médium>/com.mega.update` atd.; vlastnosti a služby aktualizací; **kandidáti na soubor firmwaru** (řádky `FW:`)                                                                 |
 | `carplay.tar`           | vše nalezené k CarPlay: soubory, APK balíčků, `.rc`, `/data/carplay`, pokud je čitelné                                                                                                                                                     |
 | `etc.tar`               | `etc/` všech oddílů: permissions, init, selinux, vintf, zvukové politiky, `EcuTable.json`; plus `build.prop` a manifesty VINTF                                                                                                             |
+| `new.tar`               | **systémové balíčky, které v čínském sestavení nejsou** (`cn-packages.txt`): server CarPlay, rádio, evropské služby a vše, o čem dopředu nevíme. Celé adresáře aplikací (s `lib/` a `oat/`). Aplikace nainstalované majitelem se nestahují  |
+| `voice.tar`             | hlasový asistent: `VCOS_Voice` (`com.voyah.ai.voice`), `VCOS_Tts` (`com.voyah.vcos.ttsservices`), `VCOS_VoiceUI`, `VCOS_VoiceDrawing`, další balíčky podle jména (voice/tts/speech/asr/cerence/nuance …) a celé `*/third_party` s modely; v čínském sestavení ~1,4 GB |
 | `ota-candidates.tar`    | nalezení kandidáti na soubor firmwaru                                                                                                                                                                                                      |
+| `diff.tar`              | aplikace, které se v EU sestavení (H37Z) liší v kódu — viz [seznam níže](#aplikace-které-se-v-eu-liší); ~0,75 GB                                                                                                                          |
+| `heavy.tar`             | velké aplikace, které se liší: `VCOS_Map` (v EU skrytá mapa, navigační hlášky na 6 reproduktorů), `VCOS_VoyahMusic` (zahraniční hudba); ~0,6 GB                                                                                          |
 | `tar-lists-1.txt`       | seznamy cest, ze kterých se skládal každý tar (pro kontrolu)                                                                                                                                                                               |
 | `device-errors-1.txt`   | chyby na HJ (`Permission denied` apod.) po krocích                                                                                                                                                                                        |
 
@@ -49,14 +57,30 @@ na tom, zda se najde soubor firmwaru (ten může mít gigabajty).
 Společné: `eu-dump.log` (průběh, počet položek a velikost každého archivu), `SHA256SUMS` (hashe archivů), `.done`
 (archivy stažené celé, pro navázání).
 
+### Aplikace, které se v EU liší
+
+Všechny aplikace `VCOS_*` se sestavují s příznakem `FLAVOR=H37A` nebo `H37Z`, ale skutečné rozdíly v kódu mají jen
+některé. Ty jdou do `diff.tar` (velikosti z čínského sestavení):
+
+| Skupina | Adresáře aplikací | Proč |
+|---|---|---|
+| Jazyk | `H37_SJGD_ARService` (23 MB), `VCOS_InputMethod` (28 MB) | v EU vícejazyčnost (de/fr/nl/…), rozložení klávesnice |
+| CarPlay | `VCOS_BluetoothPhone` (20 MB), `VCOS_EdgeSlide` (18 MB), `MontecarloSystemUI` (88 MB), `VCOS_SystemUi` (48 MB), `MontecarloWifiDialog` | v čínském sestavení pahýly (`DiffApi`), `persist.sys.carplay_enable`, správce zásuvných modulů projekce, hotspot pro bezdrátové CarPlay |
+| Větve `is37Z()` | `VCOS_Launcher` (96 MB), `VCOS_Adas` (94 MB), `VCOS_Calendar` (21 MB), `MegaPermissionController` (69 MB), `VCOS_VehicleSettings` (176 MB) | rozvržení, v EU vypnuté hlasové výstrahy ADAS, zahraniční rozvržení, jednotky a nabídky |
+| Region a cloud | `VCOS_Ecall` (26 MB), `VCOS_UserCenter`, `VCOS_VehicleActivation`, `VCOS_Mqtt_Service`, `VCOS_MessagePush`, `VCOS_Push`, `VCOS_AppStore`, `UpdateService`, `SystemUpdater`, `VCOS_Weather` | eCall 112, účet a aktivace na zahraničním backendu, cloudové kanály, obchod, OTA, počasí |
+
+Do fáze 1 nejdou (stáhne je fáze 2): velké a stejné nebo čistě čínské — `VCOS_SceneMode`, `VCOS_UnityServer`,
+`VCOS_DrvAsstUnityServer`, `webview`, čínské video služby, `SentryService`/`DVR`/`AVM` (v EU osekané) a služby AOSP.
+
 ## Příprava
 
 1. **adb.** Hledá se v tomto pořadí: proměnná `ADB`, složka `platform-tools/` vedle skriptu, `adb` v `PATH`.
-   macOS: `brew install android-platform-tools`. Windows a Linux: rozbalit
-   [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) do `platform-tools/` vedle
-   skriptu. Ke kontrole archivů na Windows je potřeba vestavěný `tar.exe` (Windows 10 1803 a novější). Bez něj skript
+   **Windows: nic instalovat netřeba**, `adb.exe` s knihovnami je v repozitáři (`platform-tools/`, adb z Google
+   Platform-Tools, sha256 `e1657ca239bcf53f60dd622a8476d51b8df3c2a3169f7b6082142942560627ed`). macOS:
+   `brew install android-platform-tools`. Linux: balíček `android-tools` nebo
+   [Platform-Tools](https://developer.android.com/tools/releases/platform-tools) do `platform-tools/` vedle skriptu. Ke kontrole archivů na Windows je potřeba vestavěný `tar.exe` (Windows 10 1803 a novější). Bez něj skript
    stáhne vše, ale celistvost archivů neověří.
-2. **Místo na disku.** Fáze 1: desítky MB, plus velikost souboru firmwaru, pokud se najde (jednotky GB). Fáze 2:
+2. **Místo na disku.** Fáze 1: kolem 3 GB, plus soubor firmwaru, pokud se najde (jednotky GB). Fáze 2: dalších
    7–10 GB.
 3. **Kabel USB-A ↔ USB-A** do portu ve středové konzoli.
 4. **Zapnout ADB na voze.** Port v konzoli je z výroby v režimu host (pro flashky) a ADB na něm nejde. Do režimu device
@@ -133,7 +157,7 @@ Co záleží na lidech u vozu:
      `mode=host`;
    - pokud se přece jen zaškrtlo „vždy povolit“: v „Pro vývojáře“ odvolat autorizace ladění (pokud je položka dostupná);
    - pokud se běh přerušil (kabel, uspání HJ): uklidit zbytky
-     `adb shell rm -rf /data/local/tmp/eudump /data/local/tmp/eu-dump-device.sh`. `eu-dump.bat` po Ctrl+C neuklízí,
+     `adb shell rm -rf /data/local/tmp/eudump /data/local/tmp/eu-dump-device.sh /data/local/tmp/eu-cn-packages.txt`. `eu-dump.bat` po Ctrl+C neuklízí,
      příkaz pak spustit ručně.
 
 ## Co zkontrolovat hned, dokud je vůz u vás
@@ -143,6 +167,10 @@ Co záleží na lidech u vozu:
 - V „SOUBORY podle vzoru“ by měl být `/system/bin/CarPlayCommService` (možná i `IAPCommService`).
 - Pokud balíčky jsou, ale `carplay.tar` je prázdný nebo malý: viz `device-errors-1.txt`, oddíl `tar-carplay.err`.
 - Pokud jsou v `ota-search.txt` kandidáti (`FW:`), ověřit, že je `ota-candidates.tar` obsahuje (`tar -tvf`).
+- V `report.txt` → „BALÍČKY, které v čínském sestavení nejsou“: to je jádro rozdílu EU/CN, vše z toho je v `new.tar`.
+- V `voice.txt` → strom `*/third_party`: hledat anglické prostředky (adresáře nebo soubory `en`, `en-US`, `english`,
+  hlasy `en-US-*Neural`) a jiného dodavatele než iFlytek (`cerence`, `nuance`). Na displeji vozu přepnout asistenta
+  do angličtiny a spustit fázi 1 znovu do stejné složky: textové přehledy a logcat se obnoví, archivy se nestahují znovu.
 
 ## Omezení
 
@@ -154,8 +182,9 @@ Co záleží na lidech u vozu:
   Balíček stažený přes OTA se po instalaci obvykle maže.
 - `adb pull` se nepoužívá: na čínské verzi SELinux nepouští sync-službu `adbd` do části oddílů, kdežto `tar` pod
   `shell` je přečte. Proto se vše stahuje přes `adb exec-out tar`.
-- ✅ Ověřeno na laboratorním emulátoru HJ (sestavení 4.3.1) pod uid `shell`: fáze 1 a 2, nalezení podstrčeného
-  testovacího souboru firmwaru s mezerami ve jméně, úklid na HJ. ❓ Na živém EU voze a na Windows zatím nespuštěno.
+- ✅ Ověřeno na laboratorním emulátoru HJ (sestavení 4.3.1) pod uid `shell`: fáze 1 a 2, žádný soubor ve dvou
+  archivech, `new.tar` pro balíčky vyňaté ze seznamu, nalezení podstrčeného testovacího souboru firmwaru s mezerami ve
+  jméně, navázání, úklid na HJ. ❓ Na živém EU voze a na Windows zatím nespuštěno.
 
 ## Po výpisu
 
