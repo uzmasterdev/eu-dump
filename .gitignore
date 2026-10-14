@@ -1,0 +1,4 @@
+# Výstupy výpisu: cizí binárky (GB), sériová čísla, VIN a logcat cizího vozu
+eu-*/
+platform-tools/
+.DS_Store
