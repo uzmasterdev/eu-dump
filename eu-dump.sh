@@ -4,7 +4,8 @@
 # Dvě fáze bez překryvu:
 #   fáze 1 (rychlá, výchozí): přehledy (sestavení, balíčky, CarPlay, hlas, hledání firmwaru) + carplay.tar, etc.tar,
 #          new.tar (balíčky, které v čínském sestavení nejsou), voice.tar (hlasový asistent), ota-candidates.tar,
-#          diff.tar a heavy.tar (aplikace, které se v EU liší v kódu);
+#          diff.tar a heavy.tar (aplikace, které se v EU liší v kódu, včetně všech H37Z_*),
+#          eufiles.tar (soubory, které v čínském obrazu nejsou: knihovny, programy, konfigurace);
 #   fáze 2 (--full): vše ostatní — celé oddíly obrazu (part-*.tar), rozbalené APEX, /data/app;
 #          co stáhla 1. fáze, se neopakuje.
 # Návod — README.md vedle.
@@ -36,6 +37,7 @@ fi
 [ -n "$OUT" ] || OUT="$DIR/eu-$(date +%Y%m%d-%H%M%S)"
 DEV=/data/local/tmp/eu-dump-device.sh
 CN=/data/local/tmp/eu-cn-packages.txt   # seznam balíčků čínského sestavení — pro new.tar
+CNF=/data/local/tmp/eu-cn-files.txt     # seznam souborů čínského obrazu — pro eufiles.tar
 
 # adb: proměnná ADB → platform-tools/ vedle skriptu → PATH
 pick_adb() {
@@ -60,14 +62,15 @@ echo "✔ HJ připojena. Výstup: $OUT"
 echo "EU výpis $(date '+%Y-%m-%d %H:%M:%S'), fáze: $MODE, adb: $ADB" >>"$LOG"   # >> — při navázání se log doplňuje
 
 # Úklid na HJ při jakémkoli ukončení, i při Ctrl+C (při vytrženém kabelu se neprovede — viz README)
-cleanup() { "$ADB" shell "rm -rf /data/local/tmp/eudump $DEV $CN" >/dev/null 2>&1; }
+cleanup() { "$ADB" shell "rm -rf /data/local/tmp/eudump $DEV $CN $CNF" >/dev/null 2>&1; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 "$ADB" push "$DIR/eu-dump-device.sh" "$DEV" >/dev/null || { echo "✖ skript se nepodařilo nahrát na HJ"; exit 1; }
 "$ADB" push "$DIR/cn-packages.txt" "$CN" >/dev/null || { echo "✖ seznam čínských balíčků se nepodařilo nahrát na HJ"; exit 1; }
+"$ADB" push "$DIR/cn-files.txt" "$CNF" >/dev/null || { echo "✖ seznam souborů čínského obrazu se nepodařilo nahrát na HJ"; exit 1; }
 # CRLF po úpravě na Windows rozbije sh na HJ
-"$ADB" shell "sed -i 's/\r\$//' $DEV $CN"
+"$ADB" shell "sed -i 's/\r\$//' $DEV $CN $CNF"
 
 fails=0
 
@@ -129,6 +132,7 @@ stage1() {
   tarstage tar-voice   voice.tar opt
   tarstage tar-ota     ota-candidates.tar opt
   tarstage tar-diff    diff.tar opt
+  tarstage tar-eufiles eufiles.tar opt
   tarstage tar-heavy   heavy.tar opt
   text lists tar-lists-1.txt
   text errs  device-errors-1.txt

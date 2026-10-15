@@ -10,13 +10,14 @@
 # do stejného proudu, proto se v tar-krocích vše navíc odvádí do souboru nebo /dev/null.
 #
 # Dvě fáze výpisu bez překryvu. Každý archiv vynechá vše, co obsahují archivy před ním (tar -X):
-#   1 (rychlá)  report carplay voice ota → tar-carplay tar-etc tar-new tar-voice tar-ota tar-diff tar-heavy
+#   1 (rychlá)  report carplay voice ota → tar-carplay tar-etc tar-new tar-voice tar-ota tar-diff tar-eufiles tar-heavy
 #   2 (úplná)   tar-apex tar-dataapps tar-part <oddíl>… — všechno ostatní
 #
 # Pouze čtení: na jednotce se nic nemění kromě pracovní složky /data/local/tmp/eudump.
 #
 W=/data/local/tmp/eudump
 CN_PKGS=/data/local/tmp/eu-cn-packages.txt   # balíčky čínského sestavení (nahrává hostitel)
+CN_FILES=/data/local/tmp/eu-cn-files.txt     # soubory čínského obrazu /system /system_ext /vendor (nahrává hostitel)
 mkdir -p "$W"
 STAGE="$1"
 ARG="${2:-}"
@@ -31,9 +32,10 @@ PARTS="/odm /oem /system_dlkm /vendor_dlkm /system_ext /product /vendor /system"
 CP_RE='carplay|linkmanager|iap2|iapcomm|iap_|/iap|mfi|androidauto|android_auto|projection|airplay|carlife|megalink'
 
 # Hlasový asistent: balíčky podle jména, soubory podle cesty (prostředky ASR/TTS leží mimo APK, v */third_party)
-VOICE_PKG_RE='voice|\.tts|ttsserv|speech|asr|vui|nlu|iflytek|cerence|nuance|aispeech|unisound|assistant|wakeup'
+VOICE_PKG_RE='microsoft|aiwindow|voice|\.tts|ttsserv|speech|asr|vui|nlu|iflytek|cerence|nuance|aispeech|unisound|assistant|wakeup'
 VOICE_PATH_RE='/third_party$|iflytek|cerence|nuance|aispeech|unisound'
-VOICE_APPS='VCOS_Voice VCOS_Tts VCOS_VoiceUI VCOS_VoiceDrawing'
+# EU (1.1.4.508): místo com.voyah.ai.voice je Microsoft — H37Z_MSVA (com.microsoft.assistant.client) a H37Z_AIWindow
+VOICE_APPS='VCOS_Voice VCOS_Tts VCOS_VoiceUI VCOS_VoiceDrawing MSVA AIWindow'
 
 # Aplikace, které se v EU sestavení (H37Z) liší v kódu: jazyky, CarPlay, větve is37Z(), region a cloud
 DIFF_APPS='H37_SJGD_ARService VCOS_InputMethod
@@ -43,14 +45,20 @@ DIFF_APPS='H37_SJGD_ARService VCOS_InputMethod
   VCOS_AppStore UpdateService SystemUpdater VCOS_Weather'
 # Liší se také, ale jsou velké — na konec 1. fáze
 HEAVY_APPS='VCOS_Map VCOS_VoyahMusic'
+# Adresář aplikace H37Z_* větší než tolik KB jde do heavy.tar místo diff.tar
+HEAVY_KB=150000
 
 # Procházení FS pro kandidáty nevstupuje do duplicitních pohledů na totéž úložiště (FUSE/bind: /mnt/user,
 # /mnt/media_rw ↔ /storage/<UUID>, /data/media ↔ /storage/emulated) — jinak by soubor z flashky byl v archivu dvakrát.
 # Určitě ne firmware: logy, data a nainstalované kopie aplikací, ART cache, vlastní pracovní složka
-NOT_FW='^/log/(android|qnx|adas|kernel|anr|tombstone)|^/data/(data|user|user_de|app|dalvik-cache|misc|local/traces|system|system_ce|system_de|vendor_ce|vendor_de)/|^/data_mirror/|^/data/local/tmp/eudump/'
+NOT_FW='^/data/(data|user|user_de|app|dalvik-cache|misc|local/traces|system|system_ce|system_de|vendor_ce|vendor_de)/|^/data_mirror/|^/data/local/tmp/eudump/'
+# Logy (/log, /qlog) firmware nejsou: na voze 1.1.4.508 to bylo 600 MB záznamů SOME/IP a S32G/VIU s polohou
+# a identifikátory. Z /log se bere jen /log/ota.
 MEDIA_RE='\.(mp4|mkv|avi|mov|h264|h265|ts|jpg|jpeg|png|mp3|flac|wav|aac|m4a|ogg)$'
 
 sec() { printf '\n\n===== %s =====\n' "$1"; }
+# Z logcat vyhodí polohu vozu (NMEA věty z IAPCommService, souřadnice) — výstup se sdílí
+scrub() { grep -vE '\$G[A-Z]{4},|NMEA|[Ll]atitude|[Ll]ongitude|[Ll]ocationInfo'; }
 run() { printf '\n$ %s\n' "$*"; sh -c "$*" 2>&1; }
 
 # Oddíly, které skutečně existují. Odkazy (/odm → /vendor/odm apod.) přeskakujeme — jejich obsah
@@ -92,12 +100,25 @@ collapse() {
   }'
 }
 
-# Adresáře aplikací podle jména (app/ a priv-app/ všech oddílů)
+# Adresáře aplikací podle jména (app/ a priv-app/ všech oddílů).
+# EU sestavení má před názvem prefix modelu: VCOS_EdgeSlide → H37Z_VCOS_EdgeSlide,
+# H37_SJGD_ARService → H37Z_SJGD_ARService (ověřeno na voze 1.1.4.508).
 app_dirs() {
   for n in $*; do
-    for p in $(parts); do for d in app priv-app; do [ -d "$p/$d/$n" ] && echo "$p/$d/$n"; done; done
+    for p in $(parts); do for d in app priv-app; do for x in "$n" "H37Z_$n" "H37Z_${n#H37_}"; do
+      [ -d "$p/$d/$x" ] && echo "$p/$d/$x"
+    done; done; done
   done
 }
+
+# Všechny adresáře aplikací s prefixem H37Z_ — sestavení pro EU model, kód se liší od CN už z definice
+h37z_dirs() {
+  for p in $(parts); do for d in app priv-app; do
+    for x in "$p/$d"/H37Z_*; do [ -d "$x" ] && echo "$x"; done
+  done; done
+}
+# Velikost adresáře v KB (du z toyboxu; nečitelné části se nezapočtou)
+size_kb() { du -sk "$1" 2>/dev/null | awk '{print $1+0}'; }
 
 # ---- seznamy se sestaví jednou za sezení a kroky je sdílejí (nový .lst vzniká jen přes mv, celý)
 
@@ -105,6 +126,16 @@ app_dirs() {
 index() {
   L="$W/index.lst"; [ -e "$L" ] && return
   for p in $(parts); do find "$p" 2>/dev/null; done >"$L.tmp"
+  mv "$L.tmp" "$L"
+}
+
+# Seřazený seznam souborů a odkazů na /system /system_ext /vendor — pro srovnání s čínským obrazem.
+# /product je na voze odkaz do /system/product, /odm a *_dlkm v seznamu CN nejsou — srovnávat by se nedaly.
+index_f() {
+  L="$W/index_f.lst"; [ -e "$L" ] && return
+  for p in /system /system_ext /vendor; do
+    [ -d "$p" ] && [ ! -L "$p" ] && find "$p" \( -type f -o -type l \) 2>/dev/null
+  done | LC_ALL=C sort -u >"$L.tmp"
   mv "$L.tmp" "$L"
 }
 
@@ -116,10 +147,21 @@ carplay_list() {
     grep -iE "$CP_RE" "$W/index.lst"
     for a in $(apex_dirs); do find "$a" 2>/dev/null | grep -iE "$CP_RE"; done
     for p in $(parts); do grep -rliE 'carplay|iapcomm|linkmanager' "$p/etc/init" 2>/dev/null; done
+    # programy, které ty .rc spouštějí (CarPlayCommService, IAPCommService, megalink.sh). Pod shell jsou
+    # démony nečitelné (1.1.4.508: Permission denied i na ls) — pokus zůstane v .err jako doklad.
+    rc_bins
     for p in $(pm list packages -a 2>/dev/null | sed 's/^package://' | grep -iE "$CP_RE"); do pkg_items "$p"; done
     for d in /data/carplay /data/iap /data/vendor/carplay; do [ -r "$d" ] && echo "$d"; done
   } | collapse >"$L.tmp"
   mv "$L.tmp" "$L"
+}
+
+# Programy ze služeb v .rc k CarPlay: řádky „service <jméno> <program>“ a „… /system/bin/sh <skript>“
+rc_bins() {
+  for p in $(parts); do grep -rlE 'carplay|iapcomm|linkmanager|megalink' "$p/etc/init" 2>/dev/null; done | sort -u |
+    while read -r rc; do
+      awk '$1 == "service" { print $3; if ($3 ~ /\/sh$/ && $4 ~ /^\//) print $4 }' "$rc" 2>/dev/null
+    done | grep -v '^/system/bin/sh$' | sort -u
 }
 
 # Konfigurace oddílů: celé etc/ + build.prop a manifesty VINTF
@@ -162,15 +204,41 @@ voice_list() {
   mv "$L.tmp" "$L"
 }
 
+# Aplikace, které se liší: seznam DIFF_APPS + všechny H37Z_* (kromě velkých — ty jdou do heavy)
 diff_list() {
+  heavy_list   # dřív než L (globální proměnná)
   L="$W/diff.lst"; [ -e "$L" ] && return
-  app_dirs $DIFF_APPS | collapse >"$L.tmp"
+  { app_dirs $DIFF_APPS; h37z_dirs; } | {
+    if [ -s "$W/heavy.lst" ]; then grep -vxF -f "$W/heavy.lst"; else cat; fi   # grep -f s prázdným souborem by vyhodil vše
+  } | collapse >"$L.tmp"
   mv "$L.tmp" "$L"
 }
 
 heavy_list() {
   L="$W/heavy.lst"; [ -e "$L" ] && return
-  app_dirs $HEAVY_APPS | collapse >"$L.tmp"
+  {
+    app_dirs $HEAVY_APPS
+    for d in $(h37z_dirs); do [ "$(size_kb "$d")" -gt "$HEAVY_KB" ] && echo "$d"; done
+  } | collapse >"$L.tmp"
+  mv "$L.tmp" "$L"
+}
+
+# Soubory, které v čínském obrazu nejsou (knihovny, programy, konfigurace, prostředky EU) — bez aplikací,
+# které už mají své archivy. Srovnání podle cesty: soubory se stejnou cestou a jiným obsahem sem nepatří.
+eufiles_list() {
+  index_f
+  L="$W/eufiles.lst"; [ -e "$L" ] && return
+  if [ -r "$CN_FILES" ]; then
+    LC_ALL=C sort -u "$CN_FILES" >"$W/cn_files.sorted"
+    # Do oddílů jsou připojené cizí FS (data IDPS xdja_idps/{data,etc} s SN a VIN, overlayfs nad
+    # /system/product/overlay od vývojářských překryvů, firmware modemu/BT ve /vendor) — to není obsah obrazu
+    awk '$2 ~ "^/(system|system_ext|vendor)/" {print $2 "/"}' /proc/mounts 2>/dev/null | sort -u >"$W/submounts.lst"
+    LC_ALL=C comm -23 "$W/index_f.lst" "$W/cn_files.sorted" | {
+      if [ -s "$W/submounts.lst" ]; then grep -vF -f "$W/submounts.lst"; else cat; fi
+    } >"$L.tmp"
+  else
+    echo "chybí seznam souborů čínského obrazu $CN_FILES" >>"$ERR"; : >"$L.tmp"
+  fi
   mv "$L.tmp" "$L"
 }
 
@@ -180,16 +248,19 @@ ota_list() {
   find / \( -path /proc -o -path /sys -o -path /dev -o -path /acct -o -path /config -o -path /d \
             -o -path /system -o -path /system_ext -o -path /vendor -o -path /product -o -path /odm -o -path /apex \
             -o -path /mnt/user -o -path /mnt/pass_through -o -path /mnt/installer -o -path /mnt/androidwritable \
-            -o -path /mnt/runtime -o -path /mnt/media_rw -o -path /data/media -o -path /storage/self -o -path /data_mirror \) -prune -o \
+            -o -path /mnt/runtime -o -path /mnt/media_rw -o -path /data/media -o -path /storage/self -o -path /data_mirror \
+            -o -path /log -o -path /qlog \) -prune -o \
          -type f -size +1M \( -iname '*.zip' -o -iname 'payload*.bin' -o -iname '*update*' -o -iname '*ota*' -o -iname '*fota*' \
                    -o -iname '*.img' -o -iname '*.pkg' -o -iname '*.tgz' -o -iname '*.tar*' -o -iname '*.mbn' \
                    -o -iname '*h37*' -o -iname '*firmware*' -o -iname '*.7z' -o -iname '*.rar' -o -size +30M \) -print 2>/dev/null \
-    | grep -vE "$NOT_FW" | grep -viE "$MEDIA_RE" | sort -u >"$L.tmp"
+    | grep -vE "$NOT_FW" | grep -viE "$MEDIA_RE" >"$L.tmp"
+  find /log/ota -type f 2>/dev/null >>"$L.tmp"
+  sort -u "$L.tmp" -o "$L.tmp"
   mv "$L.tmp" "$L"
 }
 
 # Archivy 1. fáze v pořadí; každý vynechá obsah těch před ním
-P1="carplay etc new voice diff heavy"
+P1="carplay etc new voice diff eufiles heavy"
 
 # Výjimky pro tar -X: seznamy uvedených archivů → $W/x.lst
 excl() {
@@ -201,6 +272,7 @@ excl() {
 tar_p1() {
   name="$1"; before=""
   for n in $P1; do [ "$n" = "$name" ] && break; before="$before $n"; done
+  [ "$name" = eufiles ] && before="$before heavy"   # velké aplikace mají vlastní archiv na konci
   { "${name}_list"; excl $before; } 2>>"$ERR"   # nic kromě tar nesmí jít do proudu
   tar -cf - -X "$W/x.lst" -T "$W/$name.lst" 2>>"$ERR"
 }
@@ -230,8 +302,20 @@ report)
   run 'pm list libraries'; run 'pm list features'
   sec "BALÍČKY, které v čínském sestavení nejsou (obsah new.tar)"
   new_pkgs
-  sec "Adresáře aplikací, které se v EU liší (obsah diff.tar, heavy.tar)"
-  diff_list; heavy_list; cat "$W/diff.lst" "$W/heavy.lst"
+  sec "Adresáře aplikací, které se v EU liší (obsah diff.tar; velké → heavy.tar)"
+  diff_list; heavy_list
+  while read -r d; do echo "$(size_kb "$d") KB  $d"; done <"$W/diff.lst"
+  echo "--- heavy:"
+  while read -r d; do [ -e "$d" ] && echo "$(size_kb "$d") KB  $d"; done <"$W/heavy.lst"
+  sec "SOUBORY, které v čínském obrazu nejsou (eufiles.tar; bez aplikací z jiných archivů)"
+  eufiles_list
+  echo "celkem: $(wc -l <"$W/eufiles.lst")"
+  echo "--- vynechané připojené FS uvnitř oddílů:"
+  awk '$2 ~ "^/(system|system_ext|vendor)/" {print $2, $3}' /proc/mounts 2>/dev/null
+  echo "--- nečitelné pod shell (do archivu se nedostanou — jen přes OTA balíček nebo obraz oddílu):"
+  while read -r f; do [ -r "$f" ] || echo "$f"; done <"$W/eufiles.lst"
+  echo "--- mimo adresáře aplikací:"
+  grep -vE '/(app|priv-app)/' "$W/eufiles.lst"
   sec "Připojené APEX"
   apex_dirs
   sec "EXTERNÍ JAR (bootclasspath / systemserverclasspath)"
@@ -263,10 +347,16 @@ carplay)
   run 'ls -lZ /dev/i2c-* /dev/iap* 2>&1'
   run 'ls -laZ /data/carplay /data/iap /data/vendor/carplay 2>&1'
   run 'ls -lZ /system/bin/*CarPlay* /system/bin/*IAP* /system/bin/*Comm* /vendor/bin/*carplay* /vendor/bin/*iap* 2>&1'
+  sec "Programy služeb CarPlay z .rc — čitelnost pod shell"
+  rc_bins | while read -r f; do
+    if [ -r "$f" ]; then echo "čitelný:   $(ls -lZ "$f" 2>&1)"; else echo "NEČITELNÝ: $f ($(ls -lZ "$f" 2>&1))"; fi
+  done
+  sec "Knihovny, které mohou démoni CarPlay/iAP potřebovat (jména podle vzoru, /system /system_ext /vendor)"
+  index_f; grep -iE '/lib(64)?/(.*/)?[^/]*(carplay|libiap|iap2|mfi|airplay|megalink|linkmgr|mdnssd|dnssd)[^/]*$' "$W/index_f.lst"
   run "dumpsys activity services | grep -iE -A3 'carplay|linkmanager|iap'"
   run "dumpsys usb"
   sec "logcat (aktuální buffer) — řádky CarPlay/iAP"
-  logcat -d -b all 2>/dev/null | grep -iE 'carplay|iap2|iapcomm|linkmanager|MegaLink|mfi' | tail -n 3000
+  logcat -d -b all 2>/dev/null | grep -iE 'carplay|iap2|iapcomm|linkmanager|MegaLink|mfi' | scrub | tail -n 3000
   ;;
 
 voice)
@@ -292,7 +382,7 @@ voice)
   run 'settings get system system_locales; settings get secure voice_interaction_service; settings get secure voice_recognition_service; settings get secure assistant'
   run 'dumpsys voiceinteraction | head -n 80'
   sec "logcat (aktuální buffer) — řádky hlasu"
-  logcat -d -b main,system 2>/dev/null | grep -iE 'voice|asr|tts|wakeup|iflytek|cerence|nuance|speech' | tail -n 2000
+  logcat -d -b main,system 2>/dev/null | grep -iE 'voice|asr|tts|wakeup|iflytek|cerence|nuance|speech|microsoft|msva' | scrub | tail -n 2000
   ;;
 
 ota)
@@ -319,7 +409,8 @@ tar-carplay) tar_p1 carplay ;;  # vše k CarPlay: soubory, adresáře-balíčky,
 tar-etc)     tar_p1 etc ;;      # konfigurace oddílů: permissions, init, selinux, vintf, audio, EcuTable.json
 tar-new)     tar_p1 new ;;      # balíčky, které v čínském sestavení nejsou
 tar-voice)   tar_p1 voice ;;    # hlasový asistent: aplikace, modely ASR/TTS, knihovny
-tar-diff)    tar_p1 diff ;;     # aplikace, které se v EU liší v kódu
+tar-diff)    tar_p1 diff ;;     # aplikace, které se v EU liší v kódu (DIFF_APPS + všechny H37Z_*)
+tar-eufiles) tar_p1 eufiles ;;  # soubory, které v čínském obrazu nejsou (knihovny, programy, konfigurace)
 tar-heavy)   tar_p1 heavy ;;    # velké aplikace, které se liší (mapa, hudba)
 
 tar-ota)     # kandidáti na soubor firmwaru (mimo oddíly obrazu — s ostatními archivy se nepřekrývají)
@@ -357,7 +448,7 @@ tar-part)    # jeden oddíl obrazu celý, kromě toho, co stáhla 1. fáze
 
 lists)       # seznamy, podle kterých se skládaly tar (pro kontrolu, že se nic neztratilo)
   for f in "$W"/*.lst; do
-    case "$f" in */index.lst|*/x.lst) continue ;; esac
+    case "$f" in */index.lst|*/index_f.lst|*/x.lst) continue ;; esac
     [ -e "$f" ] && { echo "===== $f"; cat "$f"; }
   done
   ;;
@@ -365,7 +456,7 @@ errs)
   for f in "$W"/*.err; do [ -s "$f" ] && { echo "===== $f"; sort -u "$f" | head -n 500; }; done
   ;;
 cleanup)
-  rm -rf "$W" "$CN_PKGS"
+  rm -rf "$W" "$CN_PKGS" "$CN_FILES"
   ;;
 *)
   echo "neznámý krok: $STAGE" >&2; exit 2

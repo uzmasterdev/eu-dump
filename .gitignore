@@ -1,5 +1,7 @@
 # Výstupy výpisu: cizí binárky (GB), sériová čísla, VIN a logcat cizího vozu
 eu-*/
+# Zabalené výpisy předávané mezi lidmi (stejný obsah jako eu-*/)
+*.zip
 # Přenosné adb pro Windows je součástí repozitáře; adb pro macOS/Linux sem lze dát ručně (mimo git)
 platform-tools/*
 !platform-tools/adb.exe

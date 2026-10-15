@@ -2,7 +2,7 @@
 rem Stažení artefaktů z hlavní jednotky (HJ) dárcovského vozu s EU firmwarem (VOYAH Courage H37Z) přes ADB — Windows.
 rem Dvě fáze bez překryvu:
 rem   fáze 1 (rychlá, výchozí): přehledy + carplay, etc, new (balíčky, které v CN nejsou), voice (hlas), ota-candidates,
-rem          diff a heavy (aplikace, které se v EU liší v kódu);
+rem          diff a heavy (aplikace, které se v EU liší v kódu, vč. všech H37Z_*), eufiles (soubory, které v CN obrazu nejsou);
 rem   fáze 2 (--full): vše ostatní — celé oddíly obrazu (part-*.tar), rozbalené APEX, /data/app; 1. fáze se neopakuje.
 rem Návod — README.md vedle. Logika na HJ — eu-dump-device.sh.
 rem Pouze čtení: na HJ vzniká a na konci se maže jen /data/local/tmp/eudump.
@@ -22,6 +22,8 @@ if not defined ADB (
 set "DEV=/data/local/tmp/eu-dump-device.sh"
 rem seznam balíčků čínského sestavení — pro new.tar
 set "CN=/data/local/tmp/eu-cn-packages.txt"
+rem seznam souborů čínského obrazu — pro eufiles.tar
+set "CNF=/data/local/tmp/eu-cn-files.txt"
 
 set "MODE=1"
 if /i "%~1"=="--full" set "MODE=2"
@@ -83,25 +85,45 @@ if errorlevel 1 (
   echo [x] seznam čínských balíčků se nepodařilo nahrát na HJ
   exit /b 1
 )
+"%ADB%" push "%DIR%cn-files.txt" %CNF% >nul
+if errorlevel 1 (
+  echo [x] seznam souborů čínského obrazu se nepodařilo nahrát na HJ
+  exit /b 1
+)
 rem CRLF po git checkout na Windows rozbije sh na HJ
-"%ADB%" shell "sed -i 's/\r$//' %DEV% %CN%"
+"%ADB%" shell "sed -i 's/\r$//' %DEV% %CN% %CNF%"
 
 set "FAILS=0"
 set "LOST=0"
-if not "%MODE%"=="2" call :stage1
+if not "%MODE%"=="2" call :certsums
+rem certutil vypíše hash na 2. řádek; u prázdného souboru selže — pak hash prázdného vstupu
+> "!OUT!\SHA256SUMS" type nul
+for %%f in ("!OUT!\*.tar") do (
+  set "H="
+  if %%~zf GTR 0 (
+    for /f "skip=1 delims=" %%h in ('certutil -hashfile "%%f" SHA256 ^| findstr /v /c:"CertUtil"') do if not defined H set "H=%%h"
+  ) else set "H=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  set "H=!H: =!"
+  >>"!OUT!\SHA256SUMS" echo !H!  ./%%~nxf
+)
+goto :eof
+
+:stage1
 if not "%MODE%"=="1" if "!LOST!"=="0" call :stage2
 
-"%ADB%" shell "rm -rf /data/local/tmp/eudump %DEV% %CN%" >nul 2>nul
+"%ADB%" shell "rm -rf /data/local/tmp/eudump %DEV% %CN% %CNF%" >nul 2>nul
 if "!LOST!"=="1" (
   echo.
   echo [x] Spojení s HJ ztraceno. Připoj HJ a spusť znovu se stejnou složkou —
   echo     stažené archivy se znovu nestahují. Pokud se HJ už nepřipojí, uklid ručně:
-  echo     adb shell rm -rf /data/local/tmp/eudump %DEV% %CN%
+  echo     adb shell rm -rf /data/local/tmp/eudump %DEV% %CN% %CNF%
   if "%MODE%"=="1" (echo     %~nx0 "!OUT!") else (echo     %~nx0 --%MODE:2=full% "!OUT!")
   exit /b 2
 )
 
-powershell -NoProfile -Command "Get-ChildItem -LiteralPath '!OUT!' -Filter *.tar | Get-FileHash -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + '  ./' + (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ascii -LiteralPath '!OUT!\SHA256SUMS'"
+rem SHA256SUMS: PowerShell Get-FileHash; kde chybí (starý/omezený PowerShell — stalo se na voze 2026-10-14), certutil
+powershell -NoProfile -Command "Get-ChildItem -LiteralPath '!OUT!' -Filter *.tar | Get-FileHash -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + '  ./' + (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ascii -LiteralPath '!OUT!\SHA256SUMS'" >nul 2>nul
+if errorlevel 1 call :certsums
 
 if not "%MODE%"=="2" (
   echo.
@@ -129,7 +151,7 @@ call :text report  report.txt
 call :text carplay carplay.txt
 call :text voice   voice.txt
 call :text ota     ota-search.txt
-for %%s in ("tar-carplay carplay.tar opt" "tar-etc etc.tar" "tar-new new.tar opt" "tar-voice voice.tar opt" "tar-ota ota-candidates.tar opt" "tar-diff diff.tar opt" "tar-heavy heavy.tar opt") do (
+for %%s in ("tar-carplay carplay.tar opt" "tar-etc etc.tar" "tar-new new.tar opt" "tar-voice voice.tar opt" "tar-ota ota-candidates.tar opt" "tar-diff diff.tar opt" "tar-eufiles eufiles.tar opt" "tar-heavy heavy.tar opt") do (
   if "!LOST!"=="0" call :tar %%~s
 )
 if "!LOST!"=="0" call :text lists tar-lists-1.txt
